@@ -1,0 +1,158 @@
+#cloud-config
+datasource:
+  Ec2:
+    strict_id: false
+ssh_pwauth: no
+users:
+- name: hw2-user
+  sudo: "ALL=(ALL) NOPASSWD:ALL"
+  shell: /bin/bash
+  ssh_authorized_keys:
+  - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCnu/vz4gPsfDTAtPZ3CSe1hunRDUMTFcWPKs8+5Oa/M1gAA8VyeFA9Ip8jwmyZN0KM98WYIMvDr6uLZJmNeB+QuzQfuLC6yn1AwNyFXBY8STHnYL2EAIYKgzRVFZwE09KlYW9szKrtTxGCs38ILBnWUysgC5E4kiYrQuTuvF3rnrF2qHMRRc0oSk+1CpSydhnxNJ34zQqJ3vbFPzI5E/eXUf2J1UDxolddRp/9lttgg7AJd/s65/h08cufTHakFuy8ohI4TarIGztsUXTO6MlRKwjnnjfSXQqIWu8/FwD6QlZ8mY/CCQAeHOdnaGsFxzT3H6eVBwNJbvgOEqimof8mJ8xngQpAmx/gHyue+JJXE4YTpxXI7rMCaxVe8ZneqRGLf+2CEvrBaL/sqxk6kbu7v6qDs6RvfZf/aLGfi94wjTl01w8wTQb90dBpXdhrSrvpEx7PigrKEz8jKt5sdZ9gP6upZaVUAZYz9w6RtCYkteAHfQamzcOXaRHoNmAHZPNcTV07tSca/ifSu/z3niYDhJ5M2OlBEagfr1BmT18TcSl8KoACxpvKeq08SEpipRpaMfifSyQlom9xEjQ3Ny+RC6YoZPBXsUNF7NfJaQRmBnNIY8moJcqQQXkDbS+uHeszTshMLYZw+trYso5epRuxu8gtH7mr7nwW2Z7wI+JzwQ== kazanskii.da@phystech.edu
+write_files:
+  - path: "/usr/local/etc/docker-install.sh"
+    permissions: "755"
+    content: |
+      #!/bin/bash
+
+      # Docker
+      echo "Installing Docker"
+      sudo apt update -y && sudo apt install -y docker.io docker-compose mc screen net-tools
+      echo "Grant user access to Docker"
+      sudo usermod -aG docker hw2-user
+      newgrp docker
+      sudo ufw allow 3000 & ufw allow 9092 & ufw allow 9093 & ufw enable
+
+      mkdir -p /usr/local/etc/data-cluster
+      mkdir -p /usr/local/etc/monitoring-cluster
+
+    defer: true
+  - path: "/usr/local/etc/data-cluster/docker-compose.yml"
+    permissions: "755"
+    content: |
+      version: '3.8'
+
+      services:
+        # PostgreSQL Service
+        postgres:
+          image: postgres:15
+          container_name: postgres
+          environment:
+            POSTGRES_USER: admin
+            POSTGRES_PASSWORD: admin
+            POSTGRES_DB: example_db
+          ports:
+            - "5432:5432"
+          volumes:
+            - postgres_data:/var/lib/postgresql/data
+            - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+          networks:
+            - monitoring_net
+
+        postgres-exporter:
+          image: prometheuscommunity/postgres-exporter:latest
+          container_name: postgres_exporter
+          environment:
+            DATA_SOURCE_NAME: "postgresql://admin:admin@postgres:5432/example_db?sslmode=disable"
+          ports:
+            - "9187:9187"
+          networks:
+            - monitoring_net
+
+        # Kafka Service
+        zookeeper:
+          image: confluentinc/cp-zookeeper:7.5.0
+          container_name: zookeeper
+          environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+            ZOOKEEPER_TICK_TIME: 2000
+          ports:
+            - "2181:2181"
+          networks:
+            - monitoring_net
+
+        kafka:
+          image: confluentinc/cp-kafka:7.5.0
+          container_name: kafka
+          environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          ports:
+            - "9092:9092"
+          depends_on:
+            - zookeeper
+          networks:
+            - monitoring_net
+         
+
+        # Prometheus Service
+        prometheus:
+          image: prom/prometheus:latest
+          container_name: prometheus
+          volumes:
+            - ./prometheus.yml:/etc/prometheus/prometheus.yml
+          ports:
+            - "9090:9090"
+          networks:
+            - monitoring_net
+
+        # Grafana Service
+        grafana:
+          image: grafana/grafana:latest
+          container_name: grafana
+          environment:
+            - GF_SECURITY_ADMIN_USER=admin
+            - GF_SECURITY_ADMIN_PASSWORD=admin
+          ports:
+            - "0.0.0.0:3000:3000"
+          volumes:
+            - grafana_data:/var/lib/grafana
+          networks:
+            - monitoring_net
+
+      volumes:
+        postgres_data:
+        grafana_data:
+
+      networks:
+        monitoring_net:
+
+    defer: true
+  
+  - path: "/usr/local/etc/data-cluster/prometheus.yml"
+    permissions: "755"
+    content: |
+      global:
+        scrape_interval: 15s
+
+      scrape_configs:
+        - job_name: 'postgres-exporter'
+          static_configs:
+            - targets: ['postgres_exporter:9187']
+
+        - job_name: 'prometheus'
+          static_configs:
+            - targets: ['localhost:9090']
+
+    defer: true    
+  - path: "/usr/local/etc/data-cluster/init.sql"
+    permissions: "755"
+    content: |
+      CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          username VARCHAR(50) NOT NULL,
+          email VARCHAR(100) NOT NULL UNIQUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO users (username, email)
+      SELECT 
+          'user_' || generate_series(1, 100) AS username,
+          'user_' || generate_series(1, 100) || '@example.com' AS email;
+
+    defer: true    
+runcmd:
+  - [su, hw2-user, -c, "/usr/local/etc/docker-install.sh"]
+  - [su, hw2-user, -c, "docker-compose -f /usr/local/etc/data-cluster/docker-compose.yml up -d"]
