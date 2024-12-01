@@ -54,6 +54,8 @@ e08b673454b0   prometheuscommunity/postgres-exporter:latest   "/bin/postgres_exp
 
 ## Приложение 1. Конфигурационный файл развертывания кластера
 
+Ссылка на репозиторий: [https://github.com/dk-miptedu/cloudsrv_claster/blob/dcomposer/homework03.md](https://github.com/dk-miptedu/cloudsrv_claster/blob/dcomposer/homework03.md)
+
 ```
 #cloud-config
 datasource:
